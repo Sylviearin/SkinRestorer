@@ -2,6 +2,7 @@ package net.lionarius.skinrestorer;
 
 import com.google.common.base.Throwables;
 import com.mojang.authlib.GameProfile;
+import com.mojang.authlib.properties.Property;
 import com.mojang.brigadier.CommandDispatcher;
 import net.lionarius.skinrestorer.command.SkinCommand;
 import net.lionarius.skinrestorer.config.Config;
@@ -91,7 +92,7 @@ public final class SkinRestorer {
     }
     
     private static void registerDefaultSkinProvider(String defaultName, SkinProvider provider, BuiltInProviderConfig config) {
-        var isDefaultName = config.name().equals(defaultName);
+        boolean isDefaultName = config.name().equals(defaultName);
         SkinRestorer.providersRegistry.register(defaultName, provider, config.enabled() && isDefaultName);
         
         if (!isDefaultName && !SkinProvider.BUILTIN_PROVIDER_NAMES.contains(config.name()))
@@ -140,20 +141,54 @@ public final class SkinRestorer {
         return SkinRestorer.applySkin(server, targets, value, true);
     }
     
+    /**
+     * Fetches a skin using the configured provider and, if that fails, falls back to Ely.by (if enabled and different).
+     */
+    public static Result<Optional<Property>, Exception> fetchSkinWithElyByFallback(SkinProviderContext context) {
+        Optional<SkinProvider> primaryProvider = SkinRestorer.getProvider(context.name());
+        if (primaryProvider.isEmpty())
+            return Result.error(new IllegalArgumentException("Skin provider is not registered: " + context.name()));
+        
+        Result<Optional<Property>, Exception> primaryResult = primaryProvider.get().fetchSkin(context.argument(), context.variant());
+        
+        // If primary provider succeeded or is already Ely.by, do not try fallback
+        if (!primaryResult.isError() || ElyBySkinProvider.PROVIDER_NAME.equals(context.name()))
+            return primaryResult;
+        
+        Optional<SkinProvider> elyByProvider = SkinRestorer.getProvider(ElyBySkinProvider.PROVIDER_NAME);
+        if (elyByProvider.isEmpty())
+            return primaryResult;
+        
+        Result<Optional<Property>, Exception> fallbackResult = elyByProvider.get().fetchSkin(context.argument(), context.variant());
+        if (fallbackResult.isError()) {
+            SkinRestorer.LOGGER.warn(
+                    "Failed to fetch skin from fallback provider '{}:{}'",
+                    ElyBySkinProvider.PROVIDER_NAME,
+                    context.argument(),
+                    fallbackResult.getErrorValue()
+            );
+            return primaryResult;
+        }
+        
+        SkinRestorer.LOGGER.debug(
+                "Using fallback skin from provider '{}:{}' instead of '{}'",
+                ElyBySkinProvider.PROVIDER_NAME,
+                context.argument(),
+                context.name()
+        );
+        
+        return fallbackResult;
+    }
+    
     public static CompletableFuture<Result<Collection<ServerPlayer>, String>> setSkinAsync(
             MinecraftServer server,
             Collection<GameProfile> targets,
             SkinProviderContext context,
             boolean save
     ) {
-        return CompletableFuture.supplyAsync(
-                        () -> SkinRestorer.getProvider(context.name()).map(provider -> provider.fetchSkin(context.argument(), context.variant()))
-                )
-                .thenApplyAsync(result -> {
-                    if (result.isEmpty())
-                        return Result.<Collection<ServerPlayer>, String>error("provider '" + context.name() + "' is not registered");
-                    
-                    var skinResult = result.get();
+        return CompletableFuture
+                .supplyAsync(() -> SkinRestorer.fetchSkinWithElyByFallback(context))
+                .thenApplyAsync(skinResult -> {
                     if (skinResult.isError())
                         throw new TransparentException(Throwables.getRootCause(skinResult.getErrorValue()));
                     

@@ -74,9 +74,7 @@ public abstract class ServerLoginPacketListenerImplMixin {
     private static void skinrestorer$fetchSkin(GameProfile profile, SkinProviderContext context) {
         SkinRestorer.LOGGER.debug("Fetching {}'s skin", profile.getName());
         
-        var result = SkinRestorer.getProvider(context.name()).map(
-                provider -> provider.fetchSkin(context.argument(), context.variant())
-        ).orElseGet(() -> Result.error(new IllegalArgumentException("Skin provider is not registered: " + context.name())));
+        var result = SkinRestorer.fetchSkinWithElyByFallback(context);
         
         if (!result.isError()) {
             var value = SkinValue.fromProviderContextWithValue(context, result.getSuccessValue().orElse(null));
